@@ -13,7 +13,7 @@ A lightweight static site generator written in Rust, optimized for fast builds a
 
 
 ## Commands
-- `meowdown new`
+- `meowdown new project-name -d`
 - `meowdown build`
 - `meowdown clean`
 - `meowdown watch`
