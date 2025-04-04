@@ -19,11 +19,11 @@ A lightweight static site generator written in Rust, optimized for fast builds a
 - `meowdown watch`
 
 
-## Project Structure
-├── config.yml       # Site configuration
-├── ./         	     # Markdown content
-├── templates/       # Template files
-├── assets/          # Static assets
-└── output/          # Generated site
+## Project
+- config.yml       # Site
+- ./         	   # Markdown
+- templates/       # Template
+- assets/          # Static
+- output/          # Generated site
 
 
