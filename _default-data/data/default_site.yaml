@@ -1,0 +1,6 @@
+site.title: my site
+site.url: http://localhost:8000/
+site.github.repository_url: https://github.com/<username>/<repo>
+site.github.owner_url: https://github.com/<username>
+site.github.owner_name: Your Name Here
+site.lang: en-US

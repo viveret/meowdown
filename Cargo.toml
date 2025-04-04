@@ -1,0 +1,12 @@
+[package]
+name = "meowdown"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4.40"
+clap = { version = "4.0", features = ["derive"] }
+notify = "8.0.0"
+pulldown-cmark = "0.13.0"
+serde_yaml = "0.9.34"
+serde = { version = "1.0", features = ["derive"] }

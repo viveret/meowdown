@@ -1,0 +1,7 @@
+# Project Configuration
+input_dir: "content"
+output_dir: "output"
+template_dir: "templates"
+default_layout: "default"
+watch: true
+port: 3000
