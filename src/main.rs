@@ -42,6 +42,8 @@ pub struct Config {
     pub input_dir: String,
     pub output_dir: String,
     pub watch: bool,
+    pub variant: Option<String>,
+    pub variants: Option<Vec<String>>,
 }
 
 type FrontMatter = HashMap<String, String>;
@@ -530,12 +532,49 @@ impl GlobalContext {
     pub fn load_site_data(&mut self) {
         let path = self.cfg.relative_to_config_path(&PathBuf::from("data/site.yaml"));
         let path = path.to_str().unwrap();
-        let site_yaml = load_yaml_data(path).expect(&format!("could not get {}", path));
+        let site_yaml = self.load_yaml_data_merge_env_variant(path).expect(&format!("could not get {}", path));
         if let Value::Mapping(mapping) = site_yaml {
             self.load_site_data_from_yaml_mapping(mapping)
         } else {
             panic!("unsupported site yaml type")
         }
+    }
+
+    pub fn load_yaml_data_merge_env_variant(&self, path: &str)  -> Result<Value, Box<dyn Error>> {
+        let primary = load_yaml_data(path)?;
+        if let Some(path_env_secondary) = self.path_add_variant(path) {
+            // Only merge if variant file exists
+            if Path::new(&path_env_secondary).exists() {
+                let secondary = load_yaml_data(&path_env_secondary)?;
+                Ok(merge_yaml_values(primary, secondary))
+            } else {
+                Ok(primary)
+            }
+        } else {
+            Ok(primary)
+        }
+    }
+
+    pub fn path_add_variant(&self, path: &str) -> Option<String> {
+        // change file path from something like "abcde.txt" to "abcde.blue.txt", "foobar.tpl.html" to "foobar.blue.tpl.html"
+        if let Some(variant) = &self.cfg.variant {
+            if !variant.trim().is_empty() {
+                let path = Path::new(path);
+                
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let ext = path.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| format!(".{}", e))
+                        .unwrap_or_default();
+                        
+                    let new_filename = format!("{}.{}{}", stem, variant, ext);
+                    return path.with_file_name(new_filename)
+                        .to_str()
+                        .map(|x| x.to_string());
+                }
+            }
+        }
+        None
     }
     
     pub fn load_site_data_from_yaml_mapping(&mut self, mapping: serde_yaml::Mapping) {
@@ -704,9 +743,11 @@ impl GlobalContext {
         let content_node = self.parse_control_blocks(&html_content);
         
         // Create output path
-        let output_path = PathBuf::from(&self.cfg.output_dir)
-        .join(file_path_stem(Path::new("."), path))
-        .with_extension("html");
+        let output_path = self.cfg.full_output_path()
+            .join(file_path_stem(&self.cfg.full_input_path(), path))
+            .with_extension("html");
+
+        // println!("output_path: {:?}", output_path);
         
         // Get the layout hierarchy
         let layout = if let Some(layout_name) = front_matter.get("layout") {
@@ -838,6 +879,9 @@ fn copy_assets(src: &str, dst: &str, verbose: bool) -> Result<(), Box<dyn Error>
     if !Path::new(src).exists() {
         println!("input assets dir {} does not exist", src);
         return Ok(());
+    } else if src == dst {
+        println!("copy_assets src ({}) == dst ({}), do nothing", src, dst);
+        return Ok(());
     }
     
     create_dir(&Path::new(dst), verbose)?;
@@ -862,6 +906,18 @@ fn load_yaml_data(path: &str) -> Result<Value, Box<dyn Error>> {
         .map_err(|e| format!("Failed to parse YAML in {}: {}", path, e).into())
 }
 
+// Helper function to deep merge two YAML values
+fn merge_yaml_values(mut primary: Value, secondary: Value) -> Value {
+    if let Value::Mapping(ref mut map1) = primary {
+        if let Value::Mapping(map2) = secondary {
+            for (k, v) in map2 {
+                map1.insert(k, v);
+            }
+        }
+    }
+    primary
+}
+
 // ========== Main Function ==========
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -871,8 +927,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = if let Some(config_path) = &cli.config {
         Config::from_file(config_path)?
     } else {
-        // Try default config locations or create empty
-        Config::default()
+        // Try default config locations
+        let default_config_path = std::env::current_dir().unwrap().join("meowdown-config.yaml");
+        if std::fs::exists(&default_config_path)? {
+            Config::from_file(&default_config_path)?
+        } else {
+            // or create empty
+            Config::default()
+        }
     };
     
     if cli.verbose {
@@ -880,11 +942,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     match &cli.command {
-        Some(Commands::Build { output, clean }) => {
+        Some(Commands::Build { clean }) => {
             if *clean {
-                clean_output_dir(output)?;
+                clean_output_dir(&config)?;
             }
-            build_site(output, &config, cli.verbose)?;
+            build_site_for_each_variant(&config, cli.verbose)?;
+        }
+        Some(Commands::Clean { }) => {
+            clean_output_dir(&config)?;
         }
         Some(Commands::Watch { }) => {
             watch_and_rebuild(&config, cli.verbose)?;
@@ -894,7 +959,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         None => {
             // Default to build command
-            build_site(&PathBuf::from("output"), &config, cli.verbose)?;
+            build_site_for_each_variant(&config, cli.verbose)?;
         }
     }
     Ok(())
@@ -919,13 +984,13 @@ pub fn watch_and_rebuild(
 
     // Watch relevant directories
     let watch_dirs = [
-        Path::new(&config.input_dir),
-        Path::new("assets"),
+        config.full_input_path(),
+        PathBuf::from("assets"),
     ];
 
     for dir in watch_dirs {
         if dir.exists() {
-            watcher.watch(dir, notify::RecursiveMode::Recursive)?;
+            watcher.watch(&dir, notify::RecursiveMode::Recursive)?;
             if verbose {
                 println!("👀 {}", format!("Watching: {}", dir.display()));
             }
@@ -948,7 +1013,7 @@ pub fn watch_and_rebuild(
                         );
                     }
 
-                    match build_site(&PathBuf::from(&config.output_dir), config, verbose) {
+                    match build_site_for_each_variant(config, verbose) {
                         Ok(_) => {
                             println!("✅ {}", "Rebuild successful!");
                             last_build = std::time::Instant::now();
@@ -1047,13 +1112,32 @@ fn create_file(path: &Path, content: &str, verbose: bool) -> std::io::Result<()>
     Ok(())
 }
 
-fn clean_output_dir(output: &PathBuf) -> Result<(), Box<dyn Error>> {
+fn clean_output_dir(config: &Config) -> Result<(), Box<dyn Error>> {
+    let output = config.full_output_path();
     fs::remove_dir_all(output)
         .map_err(|e| e.into())
 }
 
-fn build_site(output_base: &PathBuf, config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
-    let output_base = config.relative_to_config_path(output_base);
+fn build_site_for_each_variant(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
+    if config.variant.is_some() {
+        if config.variants.is_some() {
+            panic!("Cannot specify both variant and variants in {:?}", config.config_path);
+        } else {
+            build_site(config, verbose)
+        }
+    } else if let Some(variants) = &config.variants {
+        for variant in variants {
+            let cfg_variant = Config { variant: Some(variant.clone()), variants: None, .. config.clone() };
+            build_site(&cfg_variant, verbose)?;
+        }
+        Ok(())
+    } else {
+        build_site(config, verbose)
+    }
+}
+
+fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
+    let output_base = config.full_output_path();
     if verbose {
         println!("outputting to {}", output_base.to_str().unwrap());
     }
@@ -1062,8 +1146,7 @@ fn build_site(output_base: &PathBuf, config: &Config, verbose: bool) -> Result<(
     create_dir(&output_base, verbose)?;
     
     // Build and render all pages
-    let input_dir = PathBuf::from(&config.input_dir);
-    for path in get_md_files_recursive(&input_dir)
+    for path in get_md_files_recursive(&config.full_input_path())
         .into_iter()
         .filter(|p| !p.contains("/assets/") && !p.contains("assets/"))
     {
@@ -1094,7 +1177,12 @@ fn build_site(output_base: &PathBuf, config: &Config, verbose: bool) -> Result<(
         output_base.join("assets").to_str().unwrap(), 
         verbose
     )?;
-    println!("Site generation complete!");
+
+    if let Some(variant) = &config.variant {
+        println!("Site generation for variant {} complete!", variant);
+    } else {
+        println!("Site generation complete!");
+    }
     Ok(())
 }
 
@@ -1118,15 +1206,13 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Commands {
     // Build the site
-    Build {
-        // Output directory
-        #[arg(short, long, default_value = "output")]
-        output: PathBuf,
-        
+    Build {    
         // Clean output directory before building
         #[arg(short, long)]
         clean: bool,
     },
+    // Clean project
+    Clean { },
     // Watch for changes and rebuild
     Watch { },
     // Create a new project
@@ -1147,6 +1233,8 @@ impl Default for Config {
             input_dir: "./".to_string(),
             output_dir: "output".to_string(),
             watch: false,
+            variant: None,
+            variants: None,
         }
     }
 }
@@ -1159,9 +1247,45 @@ impl Config {
     
     fn relative_to_config_path(&self, path: &PathBuf) -> PathBuf {
         if let Some(p) = self.config_path.clone() {
-            PathBuf::from(p.as_str()).parent().unwrap().into()
+            if path.as_os_str() == "." || path.as_os_str() == "./" {
+                return PathBuf::from(p.as_str());
+            } else {
+                PathBuf::from(p.as_str()).parent().unwrap().into()
+            }
         } else {
             std::env::current_dir().unwrap()
         }.join(path)
+    }
+    
+    fn full_output_path(&self) -> PathBuf {
+        if self.variants.is_some() {
+            panic!("must call build_site_for_each_variant otherwise not sure which to build for");
+        }
+
+        let p = if let Some(variant) = &self.variant {
+            self.output_dir.replace("{{variant}}", variant)
+        } else {
+            self.output_dir.clone()
+        };
+
+        if p.is_empty() || p == "." || p == "./" {
+            self.config_path.clone().map(|x| PathBuf::from(x)).or(std::env::current_dir().ok()).unwrap()
+        } else {
+            self.relative_to_config_path(&PathBuf::from(&p))
+        }
+    }
+    
+    pub fn full_input_path(&self) -> PathBuf {
+        let p = if let Some(variant) = &self.variant {
+            self.input_dir.replace("{{variant}}", variant)
+        } else {
+            self.input_dir.clone()
+        };
+
+        if p.is_empty() || p == "." || p == "./" {
+            self.config_path.clone().map(|x| PathBuf::from(x)).or(std::env::current_dir().ok()).unwrap()
+        } else {
+            self.relative_to_config_path(&PathBuf::from(&p))
+        }
     }
 }
