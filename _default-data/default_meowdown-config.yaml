@@ -1,0 +1,4 @@
+# Project Configuration
+input_dir: "./"
+output_dir: "output"
+watch: false

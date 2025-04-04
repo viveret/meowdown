@@ -1045,11 +1045,13 @@ pub fn create_new_project(
     use_default_template: bool,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_dir = Path::new(name);
+    let project_dir = std::env::current_dir().unwrap().join(name);
+    println!("creating new project at {:?}", project_dir);
     
     // Create project directory structure
-    create_dir(project_dir, verbose)?;
+    create_dir(&project_dir, verbose)?;
     create_dir(&project_dir.join("assets"), verbose)?;
+    create_dir(&project_dir.join("data"), verbose)?;
     create_dir(&project_dir.join("templates"), verbose)?;
 
     // Create default files
@@ -1060,8 +1062,8 @@ pub fn create_new_project(
     )?;
 
     create_file(
-        &project_dir.join("config.yaml"),
-        include_str!("../_default-data/default_config.yaml"),
+        &project_dir.join("meowdown-config.yaml"),
+        include_str!("../_default-data/default_meowdown-config.yaml"),
         verbose,
     )?;
 
@@ -1073,7 +1075,7 @@ pub fn create_new_project(
 
     if use_default_template {
         create_file(
-            &project_dir.join("templates/default.tpl"),
+            &project_dir.join("templates/default.tpl.html"),
             include_str!("../_default-data/templates/default_layout.tpl.html"),
             verbose,
         )?;
