@@ -20,10 +20,11 @@ A lightweight static site generator written in Rust, optimized for fast builds a
 
 
 ## Project
-- config.yml       # Site
-- ./         	   # Markdown
-- templates/       # Template
-- assets/          # Static
-- output/          # Generated site
+- meowdown-config.yaml
+- ./
+- data/
+- templates/
+- assets/
+- output/
 
 
