@@ -1,0 +1,29 @@
+# MeowDown
+
+A lightweight static site generator written in Rust, optimized for fast builds and simple content workflows.
+
+## Features
+
+- **Markdown to HTML** with front matter support
+- **Template inheritance** using Rust-based templates
+- **File watching** for automatic rebuilds
+- **YAML configuration** with environment variants
+- **Asset pipeline** with automatic copying
+- **Fast builds** leveraging Rust's performance
+
+
+## Commands
+- `meowdown new`
+- `meowdown build`
+- `meowdown clean`
+- `meowdown watch`
+
+
+## Project Structure
+├── config.yml       # Site configuration
+├── ./         	     # Markdown content
+├── templates/       # Template files
+├── assets/          # Static assets
+└── output/          # Generated site
+
+
