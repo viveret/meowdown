@@ -28,3 +28,5 @@ A lightweight static site generator written in Rust, optimized for fast builds a
 - output/
 
 
+## Example projects
+- https://github.com/viveret/viveret
