@@ -1597,9 +1597,9 @@ fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
 }
 
 #[derive(Parser)]
-#[command(name = "MeowStatic")]
+#[command(name = "MeowDown")]
 #[command(version = "1.0")]
-#[command(about = "A purr-fect static site generator", long_about = None)]
+#[command(about = "A static site generator", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
