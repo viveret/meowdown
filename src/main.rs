@@ -467,6 +467,13 @@ impl GlobalContext {
         );
 
         self.register_function(
+            "modified-datetime-pretty",
+            &|_, _, ctx, _| {
+                ctx.borrow().path // get mod time from file path
+            }.format("%c").to_string(),
+        );
+
+        self.register_function(
             "date_html",
             &|_, _, ctx, _| {
                 if let Some(date_str) = ctx.borrow().get_string("date") {
