@@ -1,8 +1,8 @@
 use std::{
-    cell::RefCell, collections::HashMap, error::Error, fs::{self, File}, io::Write, path::{Path, PathBuf}, process::Command, rc::Rc, time::{Duration, SystemTime}
+    cell::RefCell, collections::HashMap, error::Error, fs::{self, File}, io::{Read, Write}, path::{Path, PathBuf}, process::Command, rc::Rc, time::{Duration, SystemTime}
 };
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use notify::{RecommendedWatcher, Watcher};
 use pulldown_cmark::{html, Event, Options, Tag};
@@ -44,6 +44,8 @@ pub struct Config {
     pub watch: bool,
     pub variant: Option<String>,
     pub variants: Option<Vec<String>>,
+    pub generate_robots_txt: Option<bool>,
+    pub generate_sitemap_xml: Option<bool>,
 }
 
 type FrontMatter = HashMap<String, String>;
@@ -91,6 +93,93 @@ enum TemplateNode {
     },
     StringContent(String),
     Composite(Vec<TemplateNode>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RobotsConfig {
+    // Global crawl delay in seconds
+    pub crawl_delay: Option<u32>,
+    
+    // Sitemap location (relative to site root)
+    pub sitemap: Option<String>,
+    
+    // User-agent specific rules (supports multiple agents per rule)
+    pub user_agents: Option<Vec<RobotsUserAgentRules>>,
+    
+    // Global allow/disallow rules that apply to all agents
+    pub global_rules: Option<RobotsGlobalRules>,
+
+    // Auto-disallow any HTML files not marked for inclusion
+    pub auto_disallow_non_included_html: Option<bool>,
+
+    // Auto-include generated HTML files
+    pub auto_include_generated_html: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RobotsUserAgentRules {
+    // Multiple user agents these rules apply to
+    pub user_agents: Vec<String>,
+    
+    // Paths to allow for these agents
+    pub allow: Option<Vec<String>>,
+    
+    // Paths to disallow for these agents
+    pub disallow: Option<Vec<String>>,
+    
+    // Crawl delay for these agents
+    pub crawl_delay: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RobotsGlobalRules {
+    // Paths to allow (relative to site root)
+    pub allow: Option<Vec<String>>,
+    
+    // Paths to disallow (relative to site root)
+    pub disallow: Option<Vec<String>>,
+}
+
+// Represents a single entry in a sitemap.xml file
+#[derive(Debug, Clone)]
+pub struct SitemapXmlNode {
+    // The URL location (required)
+    pub loc: String,
+    
+    // Last modification date (optional)
+    pub lastmod: Option<DateTime<Utc>>,
+    
+    // Change frequency (optional)
+    pub changefreq: Option<ChangeFrequency>,
+    
+    // Priority (0.0 to 1.0, optional)
+    pub priority: Option<f32>,
+    
+    // Alternate language versions (optional)
+    pub alternates: Vec<AlternateLink>,
+}
+
+// Frequency of page changes
+#[derive(Debug, Clone, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum ChangeFrequency {
+    Always,
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    Never,
+}
+
+// Alternate language/location version
+#[derive(Debug, Clone)]
+pub struct AlternateLink {
+    // URL of alternate version
+    pub url: String,
+    
+    // Language code (e.g., "en", "fr")
+    pub lang: String,
 }
 
 struct GlobalContext {
@@ -791,6 +880,118 @@ impl GlobalContext {
         let path = path.trim_start_matches('/').to_string();
         format!("{}/{}", base, path)
     }
+
+    fn load_robots_config(&self) -> Result<Option<RobotsConfig>, Box<dyn std::error::Error>> {
+        let config_path = self.cfg.relative_to_config_path(&PathBuf::from("data/robots_config.yaml"));
+        if fs::exists(&config_path)? {
+            let mut file = File::open(config_path)?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            
+            let config: RobotsConfig = serde_yaml::from_str(&contents)?;
+            Ok(Some(config))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl SitemapXmlNode {
+    // Creates a new sitemap entry with required URL
+    pub fn new(loc: String) -> Self {
+        Self {
+            loc,
+            lastmod: None,
+            changefreq: None,
+            priority: None,
+            alternates: Vec::new(),
+        }
+    }
+    
+    // Sets the last modification date
+    pub fn with_lastmod(mut self, lastmod: DateTime<Utc>) -> Self {
+        self.lastmod = Some(lastmod);
+        self
+    }
+    
+    // Sets the change frequency
+    pub fn with_changefreq(mut self, changefreq: ChangeFrequency) -> Self {
+        self.changefreq = Some(changefreq);
+        self
+    }
+    
+    // Sets the priority (clamped between 0.0 and 1.0)
+    pub fn with_priority(mut self, priority: f32) -> Self {
+        self.priority = Some(priority.clamp(0.0, 1.0));
+        self
+    }
+    
+    // Adds an alternate language version
+    pub fn add_alternate(mut self, url: String, lang: impl Into<String>) -> Self {
+        self.alternates.push(AlternateLink {
+            url,
+            lang: lang.into(),
+        });
+        self
+    }
+    
+    // Generates the XML for this sitemap entry
+    pub fn to_xml(&self) -> String {
+        let mut xml = String::new();
+        
+        xml.push_str("<url>\n");
+        xml.push_str(&format!("  <loc>{}</loc>\n", self.loc));
+        
+        if let Some(lastmod) = self.lastmod {
+            xml.push_str(&format!("  <lastmod>{}</lastmod>\n", lastmod.to_rfc3339()));
+        }
+        
+        if let Some(changefreq) = &self.changefreq {
+            xml.push_str(&format!("  <changefreq>{}</changefreq>\n", changefreq));
+        }
+        
+        if let Some(priority) = self.priority {
+            xml.push_str(&format!("  <priority>{:.1}</priority>\n", priority));
+        }
+        
+        if !self.alternates.is_empty() {
+            for alt in &self.alternates {
+                xml.push_str(&format!(
+                    "  <xhtml:link rel=\"alternate\" hreflang=\"{}\" href=\"{}\"/>\n",
+                    alt.lang, alt.url
+                ));
+            }
+        }
+        
+        xml.push_str("</url>");
+        xml
+    }
+    
+    // Creates a node from a file path (relative to site root)
+    pub fn from_file(
+        file_path: PathBuf,
+        site_url: &String,
+        lastmod: Option<DateTime<Utc>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let relative_path = file_path.to_string_lossy().replace('\\', "/");
+        let full_url = PathBuf::from(&site_url).join(&relative_path);
+        
+        Ok(Self::new(full_url.to_string_lossy().to_string())
+            .with_lastmod(lastmod.unwrap_or_else(Utc::now)))
+    }
+
+    pub fn generate_sitemap_xml(nodes: &[SitemapXmlNode]) -> String {
+        let mut s = String::new();
+        s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        s.push_str("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">");
+
+        for node in nodes {
+            s.push_str(&node.to_xml());
+        }
+
+        s.push_str("</urlset>");
+        s
+    }
 }
 
 // ========== Helper Functions ==========
@@ -916,6 +1117,183 @@ fn merge_yaml_values(mut primary: Value, secondary: Value) -> Value {
         }
     }
     primary
+}
+
+pub fn generate_robots_txt(
+    config: &RobotsConfig,
+    html_files: &[PathBuf],
+    output_dir: &PathBuf,
+) -> String {
+    let mut robots = String::new();
+    
+    // Add sitemap if specified
+    if let Some(sitemap) = &config.sitemap {
+        robots.push_str(&format!("Sitemap: {}\n\n", sitemap));
+    }
+    
+    // Add global rules
+    if let Some(global_rules) = &config.global_rules {
+        // Global crawl delay
+        if let Some(delay) = config.crawl_delay {
+            robots.push_str(&format!("Crawl-delay: {}\n", delay));
+        }
+        
+        // Global allow rules
+        if let Some(allow) = &global_rules.allow {
+            for path in allow {
+                robots.push_str(&format!("Allow: {}\n", path));
+            }
+        }
+        
+        // Global disallow rules
+        if let Some(disallow) = &global_rules.disallow {
+            for path in disallow {
+                robots.push_str(&format!("Disallow: {}\n", path));
+            }
+        }
+        
+        robots.push('\n');
+    }
+    
+    // Add user-agent specific rules
+    if let Some(user_agents) = &config.user_agents {
+        for agent_rule in user_agents {
+            // Write user-agent line(s)
+            for agent in &agent_rule.user_agents {
+                robots.push_str(&format!("User-agent: {}\n", agent));
+            }
+            
+            // Agent-specific crawl delay
+            if let Some(delay) = agent_rule.crawl_delay {
+                robots.push_str(&format!("Crawl-delay: {}\n", delay));
+            }
+            
+            // Agent-specific allow rules
+            if let Some(allow) = &agent_rule.allow {
+                for path in allow {
+                    robots.push_str(&format!("Allow: {}\n", path));
+                }
+            }
+
+            if config.auto_include_generated_html.unwrap_or(false) {
+                // Auto-include any generated HTML files
+                robots.push_str("# Auto-included generated files\n");
+                for path in html_files {
+                    robots.push_str(&format!("Allow: {}\n", path.to_str().unwrap()));
+                }
+                robots.push('\n');
+            }
+            
+            // Agent-specific disallow rules
+            if let Some(disallow) = &agent_rule.disallow {
+                for path in disallow {
+                    robots.push_str(&format!("Disallow: {}\n", path));
+                }
+            }
+            
+            robots.push('\n');
+        }
+    }
+    
+    if config.auto_disallow_non_included_html.unwrap_or(false) {
+        // Auto-disallow any HTML files not marked for inclusion
+        let allowed_paths = get_all_allowed_paths(config);
+        let disallowed_html = find_disallowed_html(html_files, &allowed_paths, &output_dir);
+        
+        if !disallowed_html.is_empty() {
+            robots.push_str("# Auto-disallowed generated files\n");
+            for agent in get_all_user_agents(config) {
+                robots.push_str(&format!("User-agent: {}\n", agent));
+                for path in &disallowed_html {
+                    robots.push_str(&format!("Disallow: {}\n", path));
+                }
+                robots.push('\n');
+            }
+        }
+    }
+    
+    robots
+}
+
+// Helper function to get all allowed paths from config
+fn get_all_allowed_paths(config: &RobotsConfig) -> Vec<String> {
+    let mut allowed = Vec::new();
+    
+    if let Some(global_rules) = &config.global_rules {
+        if let Some(paths) = &global_rules.allow {
+            allowed.extend(paths.iter().cloned());
+        }
+    }
+    
+    if let Some(user_agents) = &config.user_agents {
+        for agent in user_agents {
+            if let Some(paths) = &agent.allow {
+                allowed.extend(paths.iter().cloned());
+            }
+        }
+    }
+    
+    allowed
+}
+
+// Helper function to get all user agents from config
+fn get_all_user_agents(config: &RobotsConfig) -> Vec<String> {
+    let mut agents = vec![];
+    
+    if let Some(user_agents) = &config.user_agents {
+        for agent_rule in user_agents {
+            agents.extend(agent_rule.user_agents.iter().cloned());
+        }
+    }
+    
+    agents.sort();
+    agents.dedup();
+    agents
+}
+
+// Find HTML files that shouldn't be indexed
+fn find_disallowed_html(
+    html_files: &[PathBuf],
+    allowed_paths: &[String],
+    output_dir: &PathBuf,
+) -> Vec<String> {
+    html_files
+        .iter()
+        .filter_map(|path| {
+            let relative = path.strip_prefix(output_dir).ok()?;
+            let web_path = format!("/{}", relative.display().to_string().replace('\\', "/"));
+            
+            // Check if this path is explicitly allowed
+            if !allowed_paths.iter().any(|allowed| {
+                // Simple prefix matching - you might want more sophisticated matching
+                web_path.starts_with(allowed)
+            }) {
+                Some(web_path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn generate_and_write_sitemap_xml(verbose: bool, output_base: &PathBuf, sitemap_xml_nodes: Vec<SitemapXmlNode>) -> Result<(), Box<dyn Error>> {
+    if verbose {
+        println!("generating sitemap.xml");
+    }
+    let sitemap_xml = SitemapXmlNode::generate_sitemap_xml(&sitemap_xml_nodes);
+    let output_path = output_base.join("assets/sitemap.xml");
+    fs::write(output_path, sitemap_xml)?;
+    Ok(())
+}
+
+fn generate_and_write_robots_txt(verbose: bool, output_base: &PathBuf, output_html_paths: Vec<PathBuf>, robots_config: RobotsConfig) -> Result<(), Box<dyn Error>> {
+    if verbose {
+        println!("Generating robots.txt");
+    }
+    let content = generate_robots_txt(&robots_config, &output_html_paths, output_base);
+    let output_path = output_base.join("assets/robots.txt");
+    fs::write(output_path, content)?;
+    Ok(())
 }
 
 // ========== Main Function ==========
@@ -1148,6 +1526,8 @@ fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
     create_dir(&output_base, verbose)?;
     
     // Build and render all pages
+    let mut output_html_paths = vec![];
+    let mut sitemap_xml_nodes = vec![];
     for path in get_md_files_recursive(&config.full_input_path())
         .into_iter()
         .filter(|p| !p.contains("/assets/") && !p.contains("assets/"))
@@ -1159,7 +1539,7 @@ fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
             page.print_tree(0);
         }
         
-        if let TemplateNode::Page { output_path, front_matter, .. } = &*page {
+        if let TemplateNode::Page { path, output_path, front_matter, .. } = &*page {
             let ctx = TemplateContext::new(None);
             ctx.borrow_mut().add_front_matter(front_matter);
             
@@ -1168,6 +1548,19 @@ fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
             if verbose {
                 println!("writing html to {}", output_path.to_str().unwrap());
             }
+            let relative_path = PathBuf::from(&output_path.to_str().unwrap()[output_base.to_str().unwrap().len()..]);
+            output_html_paths.push(relative_path.clone());
+
+            let lastmod = fs::File::open(path)
+                .map(|f| f.metadata().map(|t| t.modified().ok()).ok()).ok()
+                .flatten().flatten();
+            sitemap_xml_nodes.push(SitemapXmlNode {
+                changefreq: Some(ChangeFrequency::Monthly),
+                loc: global_context.relative_url(relative_path.to_str().unwrap()),
+                lastmod: lastmod.map(|x| x.into()),
+                priority: None,
+                alternates: vec![],
+            });
             fs::write(output_path, page.render(ctx, &mut global_context))?;
         } else {
             panic!("could not build page {}", path);
@@ -1179,6 +1572,21 @@ fn build_site(config: &Config, verbose: bool) -> Result<(), Box<dyn Error>> {
         output_base.join("assets").to_str().unwrap(), 
         verbose
     )?;
+
+    match global_context.load_robots_config()? {
+        Some(robots_config) if config.generate_robots_txt.unwrap_or(false) => {
+            generate_and_write_sitemap_xml(verbose, &output_base, sitemap_xml_nodes)?;
+            generate_and_write_robots_txt(verbose, &output_base, output_html_paths, robots_config)?;
+        },
+        _ if config.generate_sitemap_xml.unwrap_or(false) => {
+            generate_and_write_sitemap_xml(verbose, &output_base, sitemap_xml_nodes)?;
+        },
+        _ => {
+            if verbose {
+                println!("Not generating sitemap.xml or robots.txt");
+            }
+        }
+    }
 
     if let Some(variant) = &config.variant {
         println!("Site generation for variant {} complete!", variant);
@@ -1237,6 +1645,8 @@ impl Default for Config {
             watch: false,
             variant: None,
             variants: None,
+            generate_robots_txt: None,
+            generate_sitemap_xml: None,
         }
     }
 }

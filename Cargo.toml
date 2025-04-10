@@ -10,3 +10,4 @@ notify = "8.0.0"
 pulldown-cmark = "0.13.0"
 serde_yaml = "0.9.34"
 serde = { version = "1.0", features = ["derive"] }
+strum = { version = "0.27.1", features = ["derive"] }
